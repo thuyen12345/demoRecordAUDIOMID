@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  ai-service:
+    build: .
+    container_name: audiomind-ai-service
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:12345@postgres:5432/audiomind
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
+      - DEVICE=cpu
+    volumes:
+      - ./storage:/app/storage
+      - ./logs:/app/logs
+      - ../meeting-service/uploads:/app/uploads
+    depends_on:
+      - postgres
+    networks:
+      - audiomind-network
+
+  postgres:
+    image: postgres:14
+    container_name: audiomind-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=12345
+      - POSTGRES_DB=audiomind
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - audiomind-network
+
+networks:
+  audiomind-network:
+    driver: bridge
+
+volumes:
+  postgres-data:

@@ -1,0 +1,15 @@
+2026-03-12 13:23:11.660 | INFO     | app.pipeline:__init__:23 - Initializing Processing Pipeline
+2026-03-12 13:23:11.661 | INFO     | app.pipeline:__init__:35 - Processing Pipeline initialized successfully
+2026-03-12 13:23:11.711 | INFO     | app.main:startup_event:192 - ==================================================
+2026-03-12 13:23:11.711 | INFO     | app.main:startup_event:193 - AudioMind AI Service Starting...
+2026-03-12 13:23:11.712 | INFO     | app.main:startup_event:194 - Whisper Model: base
+2026-03-12 13:23:11.712 | INFO     | app.main:startup_event:195 - Device: cpu
+2026-03-12 13:23:11.712 | INFO     | app.main:startup_event:196 - ==================================================
+2026-03-12 15:01:51.913 | INFO     | app.pipeline:__init__:23 - Initializing Processing Pipeline
+2026-03-12 15:01:51.915 | INFO     | app.pipeline:__init__:35 - Processing Pipeline initialized successfully
+2026-03-12 15:01:51.943 | INFO     | app.main:startup_event:182 - ==================================================
+2026-03-12 15:01:51.943 | INFO     | app.main:startup_event:183 - AudioMind AI Service Starting...
+2026-03-12 15:01:51.943 | INFO     | app.main:startup_event:184 - Whisper Model: base
+2026-03-12 15:01:51.944 | INFO     | app.main:startup_event:185 - Device: cpu
+2026-03-12 15:01:51.944 | INFO     | app.main:startup_event:186 - ==================================================
+2026-03-12 15:01:51.946 | INFO     | app.main:shutdown_event:192 - AudioMind AI Service Shutting Down...
