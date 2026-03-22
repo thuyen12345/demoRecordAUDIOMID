@@ -31,10 +31,13 @@ class SpeechRecognizer:
         self, 
         audio_path: str,
         language: str = None,
-        initial_prompt: str = None,
+        initial_prompt: str = """
+    Đây là cuộc họp bằng tiếng Việt.
+    Các từ thường dùng: chào mừng, sinh viên, bài giảng, dự án, báo cáo.
+    """,
         temperature: float = 0.0,
-        beam_size: int = 5,
-        best_of: int = 5,
+        beam_size: int = 8,
+        best_of: int = 8,
         condition_on_previous_text: bool = True,
     ) -> Dict:
         """
