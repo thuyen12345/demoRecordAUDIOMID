@@ -1,10 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from loguru import logger
 import sys
+from pathlib import Path
+from uuid import uuid4
 
-from app.database import get_db, engine, Base
+from app.database import get_db, engine, Base, wait_for_database, ensure_bigint_meeting_id
 from app.pipeline import ProcessingPipeline
 from app.schemas import (
     ProcessRequest, 
@@ -14,16 +16,13 @@ from app.schemas import (
     TranscriptSegment,
     ActionItem
 )
-from app.config import get_settings
+from app.config import get_settings, get_runtime_device
 from app.ffmpeg_utils import ensure_ffmpeg_on_path
 
 # Configure logging
 logger.remove()
 logger.add(sys.stderr, level="INFO")
 logger.add("logs/app.log", rotation="500 MB", level="DEBUG")
-
-# Create database tables
-Base.metadata.create_all(bind=engine)
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -36,7 +35,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -62,7 +61,7 @@ async def health_check():
     return {
         "status": "healthy",
         "whisper_model": settings.whisper_model,
-        "device": settings.device,
+        "device": get_runtime_device(),
         "lazy_load_models": settings.lazy_load_models,
         "enable_speaker_diarization": settings.enable_speaker_diarization
     }
@@ -109,6 +108,29 @@ async def process_audio(
         
     except Exception as e:
         logger.exception(f"Processing error: {repr(e)}")
+        raise HTTPException(status_code=500, detail=repr(e))
+
+
+@app.post("/api/upload-audio")
+async def upload_audio(file: UploadFile = File(...)):
+    try:
+        uploads_dir = Path("/app/uploads")
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+
+        original_name = Path(file.filename or "audio.wav").name
+        extension = Path(original_name).suffix or ".wav"
+        saved_name = f"{uuid4().hex}{extension}"
+        saved_path = uploads_dir / saved_name
+
+        file_bytes = await file.read()
+        saved_path.write_bytes(file_bytes)
+
+        return {
+            "audio_path": str(saved_path),
+            "original_filename": original_name,
+        }
+    except Exception as e:
+        logger.exception(f"Upload audio error: {repr(e)}")
         raise HTTPException(status_code=500, detail=repr(e))
 
 
@@ -187,6 +209,10 @@ async def get_analysis(meeting_id: int, db: Session = Depends(get_db)):
 @app.on_event("startup")
 async def startup_event():
     """Startup event"""
+    wait_for_database()
+    ensure_bigint_meeting_id()
+    Base.metadata.create_all(bind=engine)
+
     try:
         ensure_ffmpeg_on_path(log=True)
     except Exception as e:
@@ -196,7 +222,7 @@ async def startup_event():
     logger.info("=" * 50)
     logger.info("AudioMind AI Service Starting...")
     logger.info(f"Whisper Model: {settings.whisper_model}")
-    logger.info(f"Device: {settings.device}")
+    logger.info(f"Device: {get_runtime_device()}")
     logger.info("=" * 50)
 
 

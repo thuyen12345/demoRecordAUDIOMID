@@ -1,42 +1,40 @@
 services:
-  ai-service:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: audiomind-ai-service
-    ports:
-      - "8000:8000"
+  db:
+    image: postgres:15
+    container_name: postgres
+    restart: always
     environment:
-      - DATABASE_URL=postgresql://postgres:12345@postgres:5432/audiomind
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN}
-      - DEVICE=cpu
-    volumes:
-      - ./storage:/app/storage
-      - ./logs:/app/logs
-      - ../meeting-service/uploads:/app/uploads
-    depends_on:
-      - postgres
-    networks:
-      - audiomind-network
-
-  postgres:
-    image: postgres:14
-    container_name: audiomind-postgres
-    environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=12345
-      - POSTGRES_DB=audiomind
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: pass
+      POSTGRES_DB: mydb
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
-    networks:
-      - audiomind-network
+      - postgres_data:/var/lib/postgresql/data
 
-networks:
-  audiomind-network:
-    driver: bridge
+  api:
+    build: .
+    container_name: ai-service-gpu
+    depends_on:
+      - db
+    environment:
+      DATABASE_URL: postgresql://user:pass@postgres:5432/mydb
+      HUGGINGFACE_TOKEN: ${HUGGINGFACE_TOKEN}
+      AI_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://host.docker.internal:11434
+      OLLAMA_MODEL: qwen2.5:3b-instruct
+      OLLAMA_TIMEOUT_SECONDS: 300
+      DEVICE: cuda   
+    ports:
+      - "8001:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+              count: all
+    runtime: nvidia
 
 volumes:
-  postgres-data:
+  postgres_data:

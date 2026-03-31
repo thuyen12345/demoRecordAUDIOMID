@@ -3,6 +3,8 @@ package com.example.meetingservice.controller;
 import com.example.meetingservice.entity.Meeting;
 import com.example.meetingservice.service.MeetingService;
 import lombok.RequiredArgsConstructor;
+
+import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -16,8 +18,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Objects;
 
+@CrossOrigin(origins = "http://localhost:5173")
 @RestController
 @RequestMapping("/meetings")
 @RequiredArgsConstructor
@@ -47,5 +51,10 @@ public class MeetingController {
     @GetMapping("/{id}")
     public Meeting getById(@PathVariable Long id) {
         return meetingService.findById(id);
+    }
+
+    @GetMapping
+    public List<Meeting> getRecentMeetings() {
+        return meetingService.findRecentMeetings();
     }
 }

@@ -6,6 +6,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.NoSuchElementException;
+import java.util.List;
 
 import java.time.LocalDateTime;
 
@@ -29,5 +30,9 @@ public class MeetingService {
     public Meeting findById(Long id) {
         return meetingRepository.findById(id)
                 .orElseThrow(() -> new NoSuchElementException("Meeting not found: " + id));
+    }
+
+    public List<Meeting> findRecentMeetings() {
+        return meetingRepository.findTop20ByOrderByIdDesc();
     }
 }

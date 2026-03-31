@@ -1,6 +1,7 @@
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Dict, List, Optional
 from datetime import datetime
+import json
 import re
 from loguru import logger
 from sqlalchemy.orm import Session
@@ -9,9 +10,10 @@ from app.services.audio_processor import AudioProcessor
 from app.services.speech_recognizer import SpeechRecognizer
 from app.services.ai_analyzer import AIAnalyzer
 from app.models import Transcript, Analysis
-from app.config import get_settings
+from app.config import get_settings, get_runtime_device
 
 settings = get_settings()
+BASELINE_MEETING_ID = 1774519878
 
 
 class ProcessingPipeline:
@@ -30,6 +32,7 @@ class ProcessingPipeline:
         self.speech_recognizer = None
         self.speaker_diarizer = None
         self.ai_analyzer = None
+        self.diarization_available = True
 
         if not settings.lazy_load_models:
             self._ensure_models_loaded()
@@ -38,55 +41,187 @@ class ProcessingPipeline:
 
     def _ensure_models_loaded(self):
         """Load heavy models only when needed."""
+        runtime_device = get_runtime_device()
+
         if self.speech_recognizer is None:
             self.speech_recognizer = SpeechRecognizer(
                 model_name=settings.whisper_model,
-                device=settings.device
+                device=runtime_device,
+                no_speech_threshold=settings.whisper_no_speech_threshold,
+                logprob_threshold=settings.whisper_logprob_threshold,
+                cpu_chunk_duration_seconds=settings.whisper_cpu_chunk_seconds,
+                gpu_chunk_duration_seconds=settings.whisper_gpu_chunk_seconds,
             )
 
         if self.ai_analyzer is None:
-            ai_provider = settings.ai_provider.lower()
-            ai_model = settings.ollama_model if ai_provider == "ollama" else settings.openai_model
             self.ai_analyzer = AIAnalyzer(
                 api_key=settings.openai_api_key,
-                model=ai_model,
-                provider=ai_provider,
+                model=settings.ollama_model,
+                provider="ollama",
                 ollama_base_url=settings.ollama_base_url,
                 timeout_seconds=settings.ollama_timeout_seconds,
             )
 
-        if settings.enable_speaker_diarization and self.speaker_diarizer is None:
-            from app.services.speaker_diarizer import SpeakerDiarizer
-            self.speaker_diarizer = SpeakerDiarizer(
-                hf_token=settings.huggingface_token,
-                device=settings.device
+        diarization_enabled = self._should_enable_diarization(runtime_device)
+        if diarization_enabled and self.speaker_diarizer is None:
+            try:
+                from app.services.speaker_diarizer import SpeakerDiarizer
+
+                self.speaker_diarizer = SpeakerDiarizer(
+                    hf_token=settings.huggingface_token,
+                    device=runtime_device
+                )
+                self.diarization_available = True
+            except Exception as e:
+                # Fallback gracefully to single-speaker mode when model/token is unavailable.
+                self.diarization_available = False
+                self.speaker_diarizer = None
+                logger.warning(f"Speaker diarization auto-disabled due to initialization failure: {repr(e)}")
+
+    def _should_enable_diarization(self, runtime_device: str) -> bool:
+        # GPU defaults to diarization enabled; CPU follows config toggle.
+        if runtime_device == "cuda":
+            return True
+        return settings.enable_speaker_diarization
+
+    def _record_baseline_snapshot(self, meeting_id: int, runtime_device: str) -> None:
+        payload = {
+            "meeting_id": meeting_id,
+            "runtime_device": runtime_device,
+            "whisper_model": settings.whisper_model,
+            "enable_speaker_diarization": self._should_enable_diarization(runtime_device),
+            "diarization_available": self.diarization_available,
+            "ollama_timeout_seconds": settings.ollama_timeout_seconds,
+            "timestamp": datetime.utcnow().isoformat(),
+        }
+
+        logger.info(f"Processing baseline snapshot: {payload}")
+
+        logs_dir = Path(__file__).resolve().parent.parent / "logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        baseline_path = logs_dir / f"baseline_{meeting_id}.json"
+        baseline_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _normalize_speaker_labels(self, segments: List[Dict]) -> List[Dict]:
+        speaker_map: Dict[str, str] = {}
+        normalized = []
+
+        for seg in segments:
+            raw_speaker = str(seg.get("speaker", "UNKNOWN")).strip() or "UNKNOWN"
+            canonical = speaker_map.get(raw_speaker)
+            if canonical is None:
+                canonical = f"SPEAKER_{len(speaker_map) + 1}"
+                speaker_map[raw_speaker] = canonical
+
+            normalized.append(
+                {
+                    "speaker": canonical,
+                    "start": seg.get("start"),
+                    "end": seg.get("end"),
+                    "text": seg.get("text", ""),
+                }
             )
+
+        return normalized
+
+    def _deduplicate_repeated_segments(
+        self,
+        segments: List[Dict],
+        repeat_threshold: int = 3,
+        max_short_text_len: int = 40,
+        max_time_gap_seconds: float = 2.5,
+    ) -> List[Dict]:
+        if not segments:
+            return segments
+
+        # Collapse runs like "Chuyên là..." repeated many short consecutive segments.
+        deduped: List[Dict] = []
+        idx = 0
+        total_removed = 0
+
+        while idx < len(segments):
+            current = segments[idx]
+            current_text = str(current.get("text", "")).strip()
+            normalized_text = re.sub(r"\s+", " ", current_text.lower())
+
+            run_end = idx
+            while run_end + 1 < len(segments):
+                nxt = segments[run_end + 1]
+                next_text = re.sub(r"\s+", " ", str(nxt.get("text", "")).strip().lower())
+                time_gap = float(nxt.get("start", 0.0)) - float(segments[run_end].get("end", 0.0))
+                if next_text != normalized_text or time_gap > max_time_gap_seconds:
+                    break
+                run_end += 1
+
+            run_length = run_end - idx + 1
+            is_short_loop = bool(normalized_text) and len(normalized_text) <= max_short_text_len
+
+            if is_short_loop and run_length > repeat_threshold:
+                deduped.append(current)
+                total_removed += run_length - 1
+            else:
+                deduped.extend(segments[idx:run_end + 1])
+
+            idx = run_end + 1
+
+        if total_removed > 0:
+            logger.warning(f"Removed {total_removed} repeated transcript segments before DB save")
+
+        return deduped
 
     def _resolve_audio_path(self, audio_path: str) -> str:
         """Resolve incoming path from other services to an existing local file path."""
-        raw_path = Path(audio_path)
+        def _decode_mojibake(value: str) -> str:
+            try:
+                return value.encode("latin-1").decode("utf-8")
+            except UnicodeError:
+                return value
+
+        path_variants = [audio_path]
+        repaired_audio_path = _decode_mojibake(audio_path)
+        if repaired_audio_path != audio_path:
+            path_variants.append(repaired_audio_path)
+
+        raw_paths = [Path(item) for item in path_variants]
+
+        windows_raw_paths = [PureWindowsPath(item) for item in path_variants]
 
         project_root = Path(__file__).resolve().parent.parent
         workspace_root = project_root.parent
 
         candidates: list[Path] = []
-        if raw_path.is_absolute():
-            candidates.append(raw_path)
-        else:
-            candidates.extend([
-                project_root / raw_path,
-                workspace_root / raw_path,
-                Path.cwd() / raw_path,
-            ])
+        for raw_path in raw_paths:
+            if raw_path.is_absolute():
+                candidates.append(raw_path)
+            else:
+                candidates.extend([
+                    project_root / raw_path,
+                    workspace_root / raw_path,
+                    Path.cwd() / raw_path,
+                ])
+
+        upload_roots = [
+            Path("/app/uploads"),
+            Path.cwd() / "uploads",
+            project_root / "uploads",
+            workspace_root / "uploads",
+            workspace_root / "meeting-service" / "uploads",
+        ]
 
         # Fallback lookup: keep only filename and search common upload locations.
-        audio_name = raw_path.name
-        candidates.extend([
-            Path.cwd() / "uploads" / audio_name,
-            project_root / "uploads" / audio_name,
-            workspace_root / "uploads" / audio_name,
-            workspace_root / "meeting-service" / "uploads" / audio_name,
-        ])
+        audio_names = list(
+            {
+                name
+                for name in (
+                    [path.name for path in raw_paths]
+                    + [path.name for path in windows_raw_paths]
+                )
+                if name
+            }
+        )
+        for audio_name in audio_names:
+            for root in upload_roots:
+                candidates.append(root / audio_name)
 
         checked = []
         seen = set()
@@ -259,8 +394,13 @@ class ProcessingPipeline:
         """
         try:
             logger.info(f"Starting processing pipeline for meeting {meeting_id}")
+            runtime_device = get_runtime_device()
             self._ensure_models_loaded()
             resolved_audio_path = self._resolve_audio_path(audio_path)
+
+            self._record_baseline_snapshot(meeting_id, runtime_device)
+            if meeting_id == BASELINE_MEETING_ID:
+                logger.info(f"Baseline test meeting detected: {BASELINE_MEETING_ID}")
             
             # Step 1: Load audio
             logger.info("Step 1: Loading audio")
@@ -290,7 +430,8 @@ class ProcessingPipeline:
             
             logger.info(f"Transcription complete: {len(transcript_segments)} segments")
             
-            if settings.enable_speaker_diarization:
+            diarization_enabled = self._should_enable_diarization(runtime_device) and self.diarization_available
+            if diarization_enabled and self.speaker_diarizer is not None:
                 # Step 3: Speaker diarization
                 logger.info("Step 3: Speaker diarization")
                 diarization = self.speaker_diarizer.diarize(resolved_audio_path)
@@ -305,6 +446,7 @@ class ProcessingPipeline:
                     transcript_segments,
                     speaker_segments
                 )
+                aligned_segments = self._normalize_speaker_labels(aligned_segments)
             else:
                 logger.info("Step 3/4: Speaker diarization disabled (low-memory mode)")
                 speaker_count = 1
@@ -317,6 +459,8 @@ class ProcessingPipeline:
                     }
                     for seg in transcript_segments
                 ]
+
+            aligned_segments = self._deduplicate_repeated_segments(aligned_segments)
             
             # Step 5: AI Analysis
             logger.info("Step 5: AI analysis")
@@ -334,6 +478,7 @@ class ProcessingPipeline:
                 "status": "completed",
                 "transcript_segments": len(aligned_segments),
                 "speaker_count": speaker_count,
+                "diarization_enabled": diarization_enabled,
                 "analysis": analysis_result
             }
             
@@ -390,11 +535,19 @@ class ProcessingPipeline:
 
             # Save analysis
             clean_analysis = _to_builtin(analysis_result or {})
+            clean_keywords = clean_analysis.get("keywords", [])
+            clean_technical_terms = clean_analysis.get("technical_terms", [])
+            if self.ai_analyzer is not None:
+                clean_technical_terms = self.ai_analyzer.sanitize_technical_terms(
+                    transcript="\n".join(str(segment.get("text", "")) for segment in aligned_segments),
+                    technical_terms=clean_technical_terms,
+                    keywords=clean_keywords,
+                )
             analysis = Analysis(
                 meeting_id=meeting_id,
                 summary=str(clean_analysis.get("summary", "")),
-                keywords=clean_analysis.get("keywords", []),
-                technical_terms=clean_analysis.get("technical_terms", []),
+                keywords=clean_keywords,
+                technical_terms=clean_technical_terms,
                 action_items=clean_analysis.get("action_items", [])
             )
             db.add(analysis)

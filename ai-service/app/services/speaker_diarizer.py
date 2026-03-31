@@ -23,10 +23,10 @@ class SpeakerDiarizer:
         logger.info("Loading pyannote speaker diarization pipeline")
         
         try:
-            # Load pretrained pipeline from Hugging Face
+            # Load pretrained pipeline from Hugging Face with modern token API.
             self.pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
-                use_auth_token=hf_token
+                token=hf_token
             )
             
             # Move to device

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, Float, ForeignKey, JSON
+from sqlalchemy import Column, Integer, BigInteger, String, Text, DateTime, Float, ForeignKey, JSON
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.database import Base
@@ -8,7 +8,7 @@ class Transcript(Base):
     __tablename__ = "transcripts"
     
     id = Column(Integer, primary_key=True, index=True)
-    meeting_id = Column(Integer, nullable=False, index=True)
+    meeting_id = Column(BigInteger, nullable=False, index=True)
     speaker = Column(String(50))
     start_time = Column(Float)
     end_time = Column(Float)
@@ -23,7 +23,7 @@ class Analysis(Base):
     __tablename__ = "analysis"
     
     id = Column(Integer, primary_key=True, index=True)
-    meeting_id = Column(Integer, nullable=False, unique=True, index=True)
+    meeting_id = Column(BigInteger, nullable=False, unique=True, index=True)
     summary = Column(Text)
     keywords = Column(JSON)  # List of keywords
     technical_terms = Column(JSON)  # List of technical terms
